@@ -1,0 +1,9 @@
+{
+  "port": 17378,
+  "projectId": "multitab-test",
+  "name": "跨域与新标签页验证",
+  "sites": [
+    {"origin": "http://127.0.0.1:17374", "pagePath": "/work"},
+    {"origin": "http://127.0.0.1:17376", "pagePath": "/work"}
+  ]
+}

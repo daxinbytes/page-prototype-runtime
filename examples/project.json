@@ -1,0 +1,15 @@
+{
+  "port": 17373,
+  "projectId": "demo",
+  "name": "演示项目",
+  "sites": [
+    {
+      "origin": "https://app.example.test",
+      "pagePath": "/app"
+    },
+    {
+      "origin": "https://preview.example.test",
+      "pagePath": "/app"
+    }
+  ]
+}

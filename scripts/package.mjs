@@ -1,0 +1,18 @@
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { resolve, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { buildDistribution } from '../lib/distribution.mjs';
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+if (process.argv.length > 2) throw new Error('直接运行 node scripts/package.mjs；运行时发行包不接收 Skill 源码');
+const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+const dist = join(root, 'dist'); await mkdir(dist, { recursive: true });
+const destination = join(dist, `page-prototype-runtime-${pkg.version}-${Date.now()}`); await mkdir(destination);
+const release = await buildDistribution(root, destination);
+const archive = `${destination}.tar.gz`;
+await promisify(execFile)('tar', ['-czf', archive, '-C', dist, destination.slice(dist.length + 1)]);
+const hash = createHash('sha256').update(await readFile(archive)).digest('hex');
+await writeFile(`${archive}.sha256`, `${hash}  ${archive.split('/').pop()}\n`);
+console.log(JSON.stringify({ directory: destination, archive, sha256: hash, files: Object.keys(release.files).length }, null, 2));

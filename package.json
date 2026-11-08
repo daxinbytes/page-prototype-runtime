@@ -1,0 +1,26 @@
+{
+  "name": "page-prototype-runtime",
+  "version": "0.7.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "fixture": "node test/project-fixture.mjs",
+    "package": "node scripts/package.mjs",
+    "install:local": "node install.mjs",
+    "start": "node bin/page-prototype.mjs start",
+    "status": "node bin/page-prototype.mjs status"
+  },
+  "dependencies": {
+    "acorn": "^8.19.0",
+    "ws": "^8.18.0"
+  },
+  "bin": {
+    "page-prototype": "bin/page-prototype.mjs",
+    "beta-preview": "bin/beta-preview.mjs"
+  },
+  "pagePrototypeApiVersion": 1
+}
