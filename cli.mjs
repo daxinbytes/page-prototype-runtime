@@ -1,3 +1,4 @@
+import { pageKey } from './extension/page-identity.js';
 import { readFile, mkdir, open, writeFile, realpath } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,8 +20,11 @@ const help = `页面原型 ${version} · 本地页面分析与预览
 
 初始化与连接：
   init --name 项目名 --url 页面地址 [--url 另一个地址] [--id 项目ID] [--path 路径] [--port 端口]
-  projects                          列出已初始化项目
-  start [项目ID或配置文件]           启动本地服务
+  projects                          只读列出已保存项目和页面
+  project use 项目ID                 切换项目，恢复旧预览并保留所有资料
+  project delete 项目ID              删除项目及其本地资料，移入回收目录
+  page remove 页面地址 [--project 项目ID] 从当前项目移出页面，保留资源和方案
+  start [项目ID或配置文件] [--port 端口] 启动服务；不指定项目时等待面板选择
   doctor                            诊断连接和采集状态，不输出配对码
   pair                              在本机显示配对码，填入扩展
   status                            完整状态（JSON）
@@ -37,9 +41,10 @@ const help = `页面原型 ${version} · 本地页面分析与预览
   scenario new 名称 [--tab 标签页ID]  基于原始页面 新建独立方案
   scenario use 方案ID [--tab 标签页ID] 恢复原页并切换到已有方案
   scenario rename 方案ID 新名称       重命名方案
-  stage --tab 标签页ID 资源ID...      准备修改稿并绑定页面
+  scenario delete 方案ID [--project 项目ID] 删除方案，保留原始资源
+  stage --project 项目ID --scenario 方案ID --tab 标签页ID 资源ID...      准备修改稿并绑定页面
   changes                           查看当前修改摘要
-  apply [--scenario 方案ID]          应用到已绑定页面，并等待资源替换结果
+  apply [--project 项目ID] [--scenario 方案ID]          应用到已绑定页面，并等待资源替换结果
   restore [标签页ID]                停用修改，保留采集
   target 标签页ID                   显式重新绑定修改目标
   join 标签页ID                     加入已在扩展中授权的新站点
@@ -47,7 +52,7 @@ const help = `页面原型 ${version} · 本地页面分析与预览
   stop                              停止本地服务
 
 数据目录：${runtime}
-切换项目：先 end、stop，再 start 另一个项目。网页显示和交互仍需实际验收。`;
+切换项目：使用面板项目下拉框或 project use 项目ID，无需重启服务。网页显示和交互仍需实际验收。`;
 const tabArgument = (value) => {
   if (value === undefined) return undefined;
   const id = Number(value);
@@ -69,29 +74,47 @@ try {
   else if (['version', '--version'].includes(action)) console.log(version);
   else if (action === 'init') output(await initializeProject(runtime, args));
   else if (action === 'projects') output(await listProjects(runtime));
+  else if (action === 'project' && args[0] === 'use' && args[1]) output(await call('/command', { action: 'project-use', projectId: args[1] }));
+  else if (action === 'project' && args[0] === 'delete' && args.length === 2) {
+    const state = await call('/status');
+    output(await call('/command', { action: 'project-delete', projectId: args[1], expectedProjectId: state.workspace?.selectedProjectId }));
+  }
+  else if (action === 'page') {
+    const expectedProjectId = takeOption('--project');
+    if (args[0] !== 'remove' || args.length !== 2) throw new Error('用法：page remove 页面地址 [--project 项目ID]');
+    const state = await call('/status');
+    output(await call('/command', { action: 'page-remove', key: pageKey(args[1]), expectedProjectId: expectedProjectId || state.workspace?.selectedProjectId }));
+  }
   else if (action === 'scenarios') output(await call('/scenarios'));
   else if (action === 'scenario') {
+    const requestedProjectId = takeOption('--project');
     const tabId = tabArgument(takeOption('--tab'));
     const subcommand = args.shift();
     const state = await call('/status');
     const expectedScenarioId = state.capture?.activeScenario?.id;
-    if (subcommand === 'new') output(await call('/command', { action: 'scenario-new', name: args.join(' '), tabId, expectedScenarioId }));
-    else if (subcommand === 'use' && args.length === 1) output(await call('/command', { action: 'scenario-use', scenarioId: args[0], tabId, expectedScenarioId }));
+    const expectedProjectId = requestedProjectId || state.workspace?.selectedProjectId;
+    if (subcommand === 'new') output(await call('/command', { action: 'scenario-new', name: args.join(' '), tabId, expectedScenarioId, expectedProjectId }));
+    else if (subcommand === 'use' && args.length === 1) output(await call('/command', { action: 'scenario-use', scenarioId: args[0], tabId, expectedScenarioId, expectedProjectId }));
+    else if (subcommand === 'delete' && args.length === 1) output(await call('/command', { action: 'scenario-delete', scenarioId: args[0], expectedProjectId, expectedScenarioId }));
     else if (subcommand === 'rename' && args.length >= 2) output(await call('/command', { action: 'scenario-rename', scenarioId: args.shift(), name: args.join(' ') }));
-    else throw new Error('用法：scenarios | scenario new 名称 [--tab ID] | scenario use 方案ID [--tab ID] | scenario rename 方案ID 新名称');
+    else throw new Error('用法：scenarios | scenario new 名称 [--tab ID] | scenario use 方案ID [--tab ID] | scenario rename 方案ID 新名称 | scenario delete 方案ID');
   }
   else if (action === 'start') {
-    const configPath = await resolveProject(runtime, root, args[0]);
-    await loadConfig(configPath);
+    const port = Number(takeOption('--port') || 17373);
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('服务端口无效');
+    const configPath = args[0] ? await resolveProject(runtime, root, args[0]) : null;
+    const requested = configPath ? await loadConfig(configPath) : null;
     try {
       const existing = JSON.parse(await readFile(`${runtime}/connection.json`, 'utf8'));
-      await call('/status');
-      if (existing.configPath !== configPath) throw new Error('已有服务使用其他配置，请先 end、stop');
+      const state = await call('/status');
+      if (configPath && state.workspace) {
+        if (state.workspace.selectedProjectId !== requested.projectId) await call('/command', { action: 'project-use', projectId: requested.projectId });
+      } else if (configPath && existing.configPath !== configPath) throw new Error('已有服务使用其他配置，请先 end、stop');
       output({ running: true, configPath, runtime }); process.exit(0);
     } catch (error) { if (error.message.includes('其他配置')) throw error; }
     await mkdir(runtime, { recursive: true, mode: 0o700 });
     const log = await open(`${runtime}/service.log`, 'a', 0o600);
-    const child = spawn(process.execPath, [`${root}/server.mjs`, configPath], {
+    const child = spawn(process.execPath, [`${root}/server.mjs`, configPath || '--idle', String(port)], {
       detached: true, cwd: root, stdio: ['ignore', log.fd, log.fd],
       env: { ...process.env, BRIDGE_RUNTIME_DIR: runtime },
     });
@@ -108,7 +131,7 @@ try {
       } catch {}
     }
     if (!ready) throw new Error(`启动失败，请查看 ${runtime}/service.log`);
-    await writeFile(`${runtime}/current-project.json`, JSON.stringify({ configPath }), { mode: 0o600 });
+    if (configPath) await writeFile(`${runtime}/current-project.json`, JSON.stringify({ configPath }), { mode: 0o600 });
     output({ running: true, configPath, runtime, next: '首次使用请运行 pair，将配对码填入扩展；已有配对无需重复。' });
   } else if (action === 'doctor') {
     let status, problem;
@@ -131,9 +154,10 @@ try {
   else if (action === 'stop') output(await call('/shutdown', {}));
   else if (action === 'apply') {
     const expected = takeOption('--scenario');
+    const expectedProjectId = takeOption('--project');
     const state = await call('/status');
     if (!state.extension?.capabilities?.includes('verified-apply')) throw new Error('请先重新加载 0.4 或更新版本的扩展，再开始项目协作');
-    const applied = await call('/command', { action, tabId: tabArgument(args[0]), expectedScenarioId: expected || state.capture?.activeScenario?.id });
+    const applied = await call('/command', { action, tabId: tabArgument(args[0]), expectedScenarioId: expected || state.capture?.activeScenario?.id, expectedProjectId: expectedProjectId || state.workspace?.selectedProjectId });
     const result = await verifyApplication(call, { tabId: applied.result.tabId, revision: applied.result.revision,
       expectedURLs: applied.resource.resources.map((item) => item.resourceUrl) });
     output({ ...result, scenario: applied.capture?.activeScenario, target: applied.result.binding, note: '全部选中资源已替换；页面视觉和交互需另行验收。' });
@@ -163,7 +187,8 @@ try {
   else if (action === 'stage') {
     const tabId = tabArgument(takeOption('--tab'));
     const expectedScenarioId = takeOption('--scenario');
+    const expectedProjectId = takeOption('--project');
     if (!args.length) throw new Error('stage 至少需要一个资源 ID');
-    output(await call('/command', { action, tabId, resourceIds: args, expectedScenarioId }));
+    output(await call('/command', { action, tabId, resourceIds: args, expectedScenarioId, expectedProjectId }));
   } else throw new Error('未知命令，运行 --help 查看用法');
 } catch (error) { console.error(error.message); process.exitCode = 1; }

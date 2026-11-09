@@ -1,51 +1,39 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>页面原型</title><link rel="stylesheet" href="popup.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>页面原型</title><link rel="stylesheet" href="popup.css"></head>
 <body>
-  <header><span class="eyebrow">本地预览 · 0.7 内测版</span><h1>页面原型</h1><p>在原页面上，试一试新交互。</p></header>
-  <main>
-    <div class="connection-track" aria-label="预览状态"><span id="service-step">本地服务</span><i>→</i><span id="page-step">目标页面</span><i>→</i><span id="override-step">修改效果</span></div>
-    <p id="status" role="status" aria-live="polite">正在读取状态…</p>
-    <section>
-      <details id="connection-settings" open>
-      <summary>连接本地工具</summary>
-      <form id="pair-form">
-        <label for="port">服务端口</label><input id="port" type="number" value="17373" min="1024" max="65535" required>
-        <label for="token">配对码</label><input id="token" type="password" autocomplete="off" placeholder="粘贴本地工具提供的配对码">
-        <p class="hint" id="pair-hint">先启动本地工具，再输入配对码。</p>
-        <button type="submit" id="connect" class="secondary">连接服务</button>
-      </form>
-      </details>
-    </section>
-    <section>
-      <h2 id="project-name">尚未连接项目</h2>
-      <div id="project-permissions" hidden><p class="hint" id="permission-hint"></p><button id="authorize-project" class="secondary">授权项目站点</button></div>
-      <label class="sr-only" for="tabs">目标页面</label><select id="tabs"><option value="">连接后显示可用页面</option></select>
-      <p class="hint" id="page-hint">请在 Chrome 中打开并登录项目页面。</p>
-      <p id="current-page" class="hint" hidden></p>
-      <details id="follow-history" hidden><summary id="follow-summary">最近跟随记录</summary><ol id="follow-events"></ol></details>
-      <button id="capture" class="secondary" disabled>采集原始页面</button>
-      <p class="hint" id="capture-status">采集后，AI 可读取页面资源与源码索引。</p>
-      <p class="hint" id="capture-warnings" hidden></p>
-      <div class="scenario-box">
-        <p id="current-scenario" class="hint">连接后显示修改方案</p>
-        <div class="scenario-picker"><label class="sr-only" for="scenarios">已保存方案</label><select id="scenarios"></select><button id="switch-scenario" class="secondary" disabled>切换</button></div>
-        <details id="new-scenario"><summary>基于原始页面 新建方案</summary>
-          <form id="scenario-form">
-            <label for="scenario-name">新方案名称</label><input id="scenario-name" maxlength="60" required placeholder="例如：搜索交互调整">
-            <p class="hint">保留旧方案，刷新所选页面及旧方案影响的页面。请先保存表单输入。</p>
-            <button id="create-scenario" class="secondary" disabled>保留旧方案并新建</button>
-          </form>
-        </details>
-        <p class="hint scenario-note">切换会恢复原始页面；选好方案后再应用修改。</p>
-      </div>
-      <p id="edit-target" class="hint">本次修改目标：尚未绑定</p>
-      <div id="pending-sites"></div>
-      <div class="actions"><button id="apply" class="secondary" disabled>应用最新修改</button><button id="restore" class="quiet" disabled>停用并恢复</button></div>
-      <button id="end" class="quiet" disabled>结束项目协作</button>
-    </section>
-    <p id="error" role="alert" hidden></p>
-    <footer>采集自动跟随；应用修改时只刷新已绑定的目标页。</footer>
-  </main>
-  <script type="module" src="popup.js"></script>
+<header><strong><span class="logo">P</span> 页面原型</strong><span id="connection-status">未连接</span></header>
+<main>
+<details id="connection-settings"><summary>连接本地工具</summary><form id="pair-form">
+<label for="port">服务端口</label><input id="port" type="number" min="1024" max="65535" value="17373" required>
+<label for="token">配对码</label><input id="token" type="password" autocomplete="off" placeholder="已配对可留空复用">
+<button id="connect" type="submit" class="secondary">连接服务</button><p class="hint">配对码只在本机使用。</p>
+</form></details>
+<div class="label-row"><label for="projects">项目 <span id="project-count"></span></label><div class="inline-actions"><button id="delete-project" class="link danger-link" hidden>删除</button><button id="show-new-project" class="link">＋ 新建</button></div></div>
+<select id="projects"><option value="">请选择项目</option></select>
+<form id="project-form" hidden><label for="project-name">项目名称</label><input id="project-name" maxlength="60" placeholder="例如：产品对比" required><div class="row"><button type="submit" id="create-project">创建项目</button><button type="button" id="cancel-project" class="secondary">取消</button></div></form>
+<div id="empty"><h2>先选一个项目</h2><p class="hint">选好项目，再接入需要分析和修改的页面。</p><p class="hint">尚未开始协作，不采集任何页面。</p></div>
+<div id="project-content" hidden>
+<section><div class="label-row"><h2>项目页面</h2><span class="hint" id="page-count"></span></div>
+<div class="current-page"><span class="hint">当前浏览器页面</span><div class="label-row"><strong id="page-title"></strong><span id="page-state" class="hint"></span></div><span id="page-url" class="hint url"></span></div>
+<button id="capture" disabled>接入并开始协作</button><p id="capture-hint" class="hint"></p><p id="shared-page" class="hint" hidden></p>
+<ul id="pages" aria-label="项目已保存页面"></ul>
+<label class="check" id="follow-label" hidden><input id="follow" type="checkbox" checked>自动跟随项目内的页面跳转</label>
+</section>
+<section><div class="label-row"><h2>方案</h2><div class="inline-actions"><button id="delete-scenario" class="link danger-link" hidden>删除</button><button id="show-new-scenario" class="link">＋ 新建</button></div></div>
+<p id="scenario-hint" class="hint"></p><label class="sr-only" for="scenarios">选择方案</label><select id="scenarios"><option value="">请选择方案</option></select>
+<form id="scenario-form" hidden><label for="scenario-name">方案名称</label><input id="scenario-name" maxlength="60" placeholder="例如：搜索交互调整" required><p class="hint">从原始页面开始，保留已有方案。</p><div class="row"><button id="create-scenario" type="submit">创建方案</button><button id="cancel-scenario" type="button" class="secondary">取消</button></div></form>
+<button id="apply" disabled hidden>查看修改效果</button><p id="preview-source" class="hint"></p>
+</section>
+<div class="label-row session"><span id="session-status" class="hint">尚未开始协作</span></div>
+<details class="diagnostics"><summary>采集详情</summary><p class="hint" id="capture-status"></p><p class="hint" id="capture-warnings"></p><p class="hint" id="status"></p></details>
+</div>
+<p id="error" role="alert" hidden></p>
+<button id="end" class="danger end-session" hidden>结束协作</button>
+</main>
+<dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-description">
+<h2 id="delete-title"></h2><p id="delete-description" class="hint"></p>
+<div class="row"><button id="cancel-delete" class="secondary" autofocus>取消</button><button id="confirm-delete" class="danger">确认删除</button></div>
+</dialog>
+<script type="module" src="popup.js"></script>
 </body></html>

@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "页面原型 · 本地预览",
-  "version": "0.7.0",
+  "version": "0.8.2",
   "description": "连接本地工具，在现有页面分析逻辑、制作和验证交互原型。",
   "minimum_chrome_version": "125",
-  "permissions": ["debugger", "storage", "webNavigation"],
+  "permissions": ["debugger", "storage", "webNavigation", "tabs"],
   "host_permissions": ["http://127.0.0.1/*"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": { "service_worker": "background.js", "type": "module" },

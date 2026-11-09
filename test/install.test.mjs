@@ -20,7 +20,7 @@ const readJson = async (file) => JSON.parse(await readFile(file, 'utf8'));
 test('source install contains runtime only and preserves data when reinstalled or upgraded', async (t) => {
   const parent = await temporary(t), home = join(parent, 'home');
   const result = JSON.parse((await install(root, home)).stdout);
-  assert.equal(result.version, '0.7.0'); assert.equal(result.apiVersion, 1);
+  assert.equal(result.version, '0.8.2'); assert.equal(result.apiVersion, 1);
   assert.equal(result.extension, join(home, 'extension'));
   const installedRoot = resolve(result.tool, '../..');
   const release = await validateDistribution(installedRoot);
@@ -43,7 +43,7 @@ test('source install contains runtime only and preserves data when reinstalled o
   await assert.rejects(install(root, home), /--update/);
   await install(root, home, '--update');
   await validateDistribution(installedRoot);
-  assert.ok((await readdir(join(home, 'versions'))).some((name) => name.startsWith('0.7.0.backup-')));
+  assert.ok((await readdir(join(home, 'versions'))).some((name) => name.startsWith('0.8.2.backup-')));
 });
 
 test('install refuses to replace an active service', async (t) => {

@@ -18,7 +18,7 @@ for (const port of ports) {
     if (url.pathname === '/late.js') {
       response.setHeader('Content-Type', 'application/javascript'); response.end('window.lateComponent = true;'); return;
     }
-    if (url.pathname.startsWith('/work/')) {
+    if (url.pathname.startsWith('/work/') || url.pathname.startsWith('/other/')) {
       response.setHeader('Content-Type', 'text/html; charset=utf-8');
       response.end(`<!doctype html><html lang="zh-CN"><head><title>${port} ${url.pathname}</title><style>body{font:16px/1.7 system-ui;background:#f2f6f8;color:#183044;padding:48px}main{background:white;max-width:700px;padding:32px;border-radius:16px}a{display:block;margin:12px 0}input{padding:8px;border:1px solid #ccc}#value{font-weight:bold;color:#10786d}</style></head><body><main>
       <h1>${url.pathname.includes('list') ? '列表页' : '详情 / 编辑页'}</h1><p>当前站点：${port}</p>

@@ -1,21 +1,21 @@
+import { matchesScope, pageKey, httpURL } from './page-identity.js';
 import { createCollector } from './collector.js';
 import { reloadPage } from './reload-page.js';
 
 export function normalizeProject(value) {
+  if (!value || (value.projectId === null && !value.origin)) return null;
   const sites = (value.sites || [{ origin: value.origin, pagePath: value.pagePath }]).map((site) => {
     const url = new URL(site.origin);
     if (!['http:', 'https:'].includes(url.protocol) || url.origin !== site.origin || !site.pagePath?.startsWith('/')) throw new Error('项目站点配置无效');
     return { origin: url.origin, pagePath: site.pagePath };
   });
-  if (!sites.length || sites.length > 30) throw new Error('项目站点数量无效');
-  return { id: value.projectId || 'legacy', name: value.projectName || '页面协作', sites };
+  if ((!sites.length && !value.managedProject) || sites.length > 30) throw new Error('项目站点数量无效');
+  return { id: value.projectId || 'legacy', name: value.projectName || '页面协作', sites,
+    pageRules: value.managedProject ? value.pageRules || [] : undefined, excludedPageKeys: value.excludedPageKeys || [], contextId: value.contextId };
 }
 export function matchesProject(project, url) {
-  try {
-    const parsed = new URL(url);
-    return project.sites.some((site) => parsed.origin === site.origin &&
-      (site.pagePath === '/' || parsed.pathname === site.pagePath || parsed.pathname.startsWith(`${site.pagePath}/`)));
-  } catch { return false; }
+  try { return Boolean(project && !project.excludedPageKeys?.includes(pageKey(url)) && (project.pageRules || project.sites).some(site => matchesScope(site, url))); }
+  catch { return false; }
 }
 export function frameURL(frame) {
   try {
@@ -34,11 +34,12 @@ export class ProjectSession {
     this.selectedTabId = null; this.binding = null; this.epoch = crypto.randomUUID();
     this.runId = 0;
     this.transitionTabs = new Set();
-    this.recent = [];
+    this.recent = []; this.followEnabled = true;
     this.message = '请先连接本地服务';
   }
   accept(value) {
     const project = normalizeProject(value);
+    if (!project) { this.project = null; this.snapshot = value; this.binding = null; this.capture = null; return; }
     const resources = value.resources || (value.resourceUrl ? [{ ...value, type: 'Script' }] : []);
     if (resources.length > 20) throw new Error('覆盖资源过多');
     for (const item of resources) {
@@ -51,7 +52,7 @@ export class ProjectSession {
   emit(message) { if (message) this.message = message; this.change(this.status()); }
   status() {
     const target = this.tabs.get(this.binding?.tabId ?? this.selectedTabId);
-    return { version: '0.7.0', capabilities: ['verified-apply', 'scenarios'], project: this.project, active: this.active, tabId: this.selectedTabId,
+    return { version: '0.8.2', capabilities: ['verified-apply', 'scenarios', 'projects', 'deletion'], contextId: this.project?.contextId, followEnabled: this.followEnabled, project: this.project, active: this.active, tabId: this.selectedTabId,
       enabled: Boolean(target?.overrides.length), observing: this.active, capturing: Boolean(target?.loading),
       capture: this.capture, binding: this.binding, message: this.message, covered: target?.covered || 0,
       lastOutcome: target?.lastOutcome || null, revision: this.snapshot?.revision,
@@ -99,6 +100,10 @@ export class ProjectSession {
     const tab = await chrome.tabs.get(tabId);
     const url = hintURL || tab.pendingUrl || tab.url;
     if (!/^https?:/.test(url || '')) return;
+    if (this.project.excludedPageKeys?.includes(pageKey(url))) {
+      this.pending.delete(tabId); this.members.delete(tabId); await this.detach(tabId);
+      this.emit('此页面已移出项目，可手动重新接入'); return;
+    }
     if (!matchesProject(this.project, url) || !await chrome.permissions.contains({ origins: [`${new URL(url).origin}/*`] })) {
       if (!this.active || runId !== this.runId) return;
       this.pending.set(tabId, { tabId, title: tab.title || '新页面', origin: new URL(url).origin, url });
@@ -111,14 +116,14 @@ export class ProjectSession {
     if (existing) return existing;
     if (this.tabs.size >= 8) throw new Error('当前会话最多跟随 8 个标签页');
     await chrome.debugger.attach({ tabId }, '1.3');
-    if (!this.active || runId !== this.runId) { await chrome.debugger.detach({ tabId }).catch(() => {}); return; }
+    if (!this.active || runId !== this.runId || !matchesProject(this.project, url)) { await chrome.debugger.detach({ tabId }).catch(() => {}); return; }
     const record = { id: tabId, url, title: tab.title || url, overrides: [], covered: 0, lastOutcome: null,
       loading: true, loaderURLs: new Map(), paused: new Map() };
     record.collector = createCollector({ tabId, captureId: this.captureId,
       allows: (resource) => this.allows(resource),
       pageURL: (loaderId) => record.loaderURLs.get(loaderId) || record.url,
       isOverridden: (resource) => record.overrides.some((item) => item.resourceUrl === resource),
-      command, rpc: this.rpc,
+      command, rpc: ((contextId) => message => this.rpc({ ...message, contextId }))(this.project.contextId),
       progress: (summary) => { if (summary?.id === this.captureId) { this.capture = summary; this.emit(); } },
     });
     this.tabs.set(tabId, record); await this.rememberAttached();
@@ -133,8 +138,8 @@ export class ProjectSession {
       await command(tabId, 'Debugger.setSkipAllPauses', { skip: true });
       await command(tabId, 'DOM.enable');
       await command(tabId, 'CSS.enable').catch(() => {});
-      if (!this.active || runId !== this.runId) { await this.detach(tabId); return; }
-      await this.rpc({ type: 'asset-page', captureId: this.captureId, url: record.url });
+      if (!this.active || runId !== this.runId || !matchesProject(this.project, record.url)) { await this.detach(tabId); return; }
+      await this.rpc({ type: 'asset-page', captureId: this.captureId, contextId: this.project.contextId, url: record.url, title: record.title });
       if (tab.active || this.selectedTabId === null) this.selectedTabId = tabId;
       this.notePage(record, '接入');
       this.emit(`已接入 ${record.title}，正在补充页面资源`);
@@ -190,6 +195,17 @@ export class ProjectSession {
     await chrome.tabs.reload(record.id, { bypassCache: true });
     return { reloadRequested: true, tabId: record.id, revision: this.snapshot.revision, binding: fixed };
   }
+  async preview(value, tabId, expectedURL) {
+    if (!Number.isInteger(tabId) || typeof expectedURL !== 'string') throw new Error('请明确选择要预览的页面');
+    const tab = await chrome.tabs.get(tabId).catch(() => null), record = this.tabs.get(tabId);
+    if (!this.active || !tab || !record || !matchesProject(this.project, tab.url)) throw new Error('请先接入当前页面，再预览方案');
+    if (tab.url !== expectedURL || (tab.pendingUrl && tab.pendingUrl !== tab.url)) throw new Error('页面已跳转，请在当前页面重新点击预览');
+    if (!value.resources?.length || value.resources.some(item => !record.collector.urls.has(item.resourceUrl))) throw new Error('这个方案的部分修改资源未在当前页面加载。请回到对应页面，或让 AI 适配当前页面。');
+    // Manual preview explicitly targets the page shown in the popup. Background
+    // Agent apply commands still require their original, guarded binding.
+    const target = { tabId, url: tab.url, title: tab.title || record.title, epoch: this.epoch };
+    return this.apply(value, target, tabId);
+  }
   async restore(requested) {
     const tabId = Number.isInteger(requested) ? requested : this.binding?.tabId ?? await this.choose();
     const record = this.tabs.get(tabId);
@@ -207,7 +223,7 @@ export class ProjectSession {
     if (!this.active) throw new Error('请先开始项目协作，再新建或切换方案');
     const tabId = await this.choose(requested);
     if (!this.tabs.has(tabId)) throw new Error('请先接入所选页面');
-    const ids = [...this.tabs.values()].filter((record) => record.id === tabId || record.overrides.length || record.needsRestore).map((record) => record.id);
+    const ids = [...this.tabs.values()].filter((record) => record.overrides.length || record.needsRestore).map((record) => record.id);
     this.binding = null; this.epoch = crypto.randomUUID();
     for (const id of ids) this.transitionTabs.add(id);
     this.emit('正在恢复原始页面，原方案修改稿已保留');
@@ -227,6 +243,34 @@ export class ProjectSession {
     this.emit('原始页面 已恢复，正在准备方案');
     return { target, refreshedTabs: ids };
   }
+  async clearPreview() {
+    const ids = [...this.tabs.values()].filter(record => record.overrides.length || record.needsRestore).map(record => record.id);
+    this.binding = null; this.epoch = crypto.randomUUID();
+    for (const id of ids) this.transitionTabs.add(id);
+    try {
+      for (const id of ids) {
+        await this.detach(id); await reloadPage(id);
+        this.transitionTabs.delete(id);
+        if (this.active) { const record = await this.follow(id); if (record) await record.collector.initialComplete(); }
+      }
+    } finally { for (const id of ids) this.transitionTabs.delete(id); }
+    this.emit('修改已停用，原页面已恢复'); return { restored: true, refreshedTabs: ids };
+  }
+  async removePage(key) {
+    this.project.excludedPageKeys = [...new Set([...(this.project.excludedPageKeys || []), key])];
+    const records = [...this.tabs.values()].filter(record => pageKey(record.url) === key);
+    for (const record of records) {
+      const changed = record.overrides.length || record.needsRestore;
+      this.members.delete(record.id);
+      await this.detach(record.id);
+      if (changed) await reloadPage(record.id);
+    }
+    for (const [id, page] of this.pending) if (pageKey(page.url) === key) { this.pending.delete(id); this.members.delete(id); }
+    if (this.binding && pageKey(this.binding.url) === key) this.binding = null;
+    if (!this.tabs.has(this.selectedTabId)) this.selectedTabId = this.tabs.keys().next().value ?? null;
+    if (!this.tabs.size && !this.attaching.size) { this.active = false; this.members.clear(); this.pending.clear(); }
+    this.emit('页面已停止跟随，其他页面和方案保留'); return { removedTabs: records.map(record => record.id) };
+  }
   async end(reload = true) {
     this.active = false; this.runId++;
     let settleTimer;
@@ -236,11 +280,19 @@ export class ProjectSession {
     for (const record of records) {
       const hadChanges = record.overrides.length > 0 || record.needsRestore;
       await this.detach(record.id);
-      if (reload && hadChanges) await chrome.tabs.reload(record.id, { bypassCache: true }).catch(() => {});
+      if (reload && hadChanges) await reloadPage(record.id);
     }
     this.members.clear(); this.pending.clear(); this.selectedTabId = null; this.binding = null; this.epoch = crypto.randomUUID();
     this.emit(reload ? '项目会话已结束，资料和修改稿已保留' : '连接已断开，已停止跟随；刷新可恢复原页面');
     return { ended: true };
+  }
+  async pageInfo(requested, expectedURL) {
+    const tabId = Number.isInteger(requested) ? requested : (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]?.id;
+    if (!Number.isInteger(tabId)) throw new Error('请打开需要接入的网页');
+    const tab = await chrome.tabs.get(tabId), url = httpURL(tab.url);
+    if (expectedURL && url.href !== expectedURL) throw new Error('页面已跳转，请重新确认后接入');
+    if (!await chrome.permissions.contains({ origins: [`${url.origin}/*`] })) throw new Error('请在扩展中授权该站点后接入');
+    return { tabId, url: url.href, title: tab.title || url.href };
   }
   async authorizeSite(tabId) {
     const pending = this.pending.get(tabId);
@@ -259,11 +311,19 @@ export class ProjectSession {
   navigation(tabId, url, title) {
     if (!this.active || !this.members.has(tabId) || this.transitionTabs.has(tabId)) return;
     const record = this.tabs.get(tabId);
+    if (!this.followEnabled && (!record || pageKey(record.url) !== pageKey(url))) {
+      if (record?.overrides.length) this.stopCoverForNavigation(record);
+      void this.detach(tabId); this.emit('自动跟随已关闭，可手动接入当前页面'); return;
+    }
     if (record?.overrides.length && url !== record.overrideTargetURL) this.stopCoverForNavigation(record);
     if (record && url) {
       const changed = record.url !== url;
       record.url = url; record.title = title || record.title;
-      if (changed && matchesProject(this.project, url)) { this.notePage(record, '自动跟随'); this.emit(`已自动跟随到 ${new URL(url).host}`); }
+      if (changed && matchesProject(this.project, url)) {
+        this.notePage(record, '自动跟随');
+        void this.rpc({ type: 'asset-page', captureId: this.captureId, contextId: this.project.contextId, url, title: record.title }).catch(error => this.emit(error.message));
+        this.emit(`已自动跟随到 ${new URL(url).host}`);
+      }
     }
     void this.follow(tabId, url).catch((error) => this.emit(error.message));
   }
@@ -274,7 +334,7 @@ export class ProjectSession {
     this.emit('目标页已跳转，后续覆盖已停止；已载入的修改可刷新恢复');
   }
   child(sourceTabId, tabId, url) {
-    if (!this.active || !this.members.has(sourceTabId)) return;
+    if (!this.active || !this.followEnabled || !this.members.has(sourceTabId)) return;
     this.members.add(tabId);
     void this.follow(tabId, url).catch((error) => this.emit(error.message));
   }

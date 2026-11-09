@@ -4,6 +4,7 @@ let socket;
 let connected = false;
 let reconnectTimer;
 let heartbeat;
+let workspace = null;
 let serial = Promise.resolve();
 const uploads = new Map();
 const exclusive = (operation) => { const result = serial.then(operation); serial = result.catch(() => {}); return result; };
@@ -28,7 +29,7 @@ function connect() {
   const previous = socket; socket = undefined; previous?.close();
   if (!settings.token) return;
   const current = new WebSocket(`ws://127.0.0.1:${settings.port}/ws`); socket = current;
-  current.onopen = () => current.send(JSON.stringify({ type: 'hello', token: settings.token, protocolVersion: 3 }));
+  current.onopen = () => current.send(JSON.stringify({ type: 'hello', token: settings.token, protocolVersion: 4 }));
   current.onmessage = async ({ data }) => {
     if (socket !== current) return;
     try {
@@ -39,12 +40,13 @@ function connect() {
         return;
       }
       if (message.type === 'welcome') {
-        if (message.protocolVersion < 3) throw new Error('请先更新并重启本地服务');
-        session.accept(message.snapshot); session.capture = message.capture; connected = true;
-        session.emit('已连接项目，选择起始页面开始协作');
+        if (message.protocolVersion < 4) throw new Error('请先更新并重启本地服务');
+        session.accept(message.snapshot); session.capture = message.capture; workspace = message.workspace; connected = true;
+        session.emit('已连接本地服务，请选择项目');
         heartbeat = setInterval(() => { if (current.readyState === WebSocket.OPEN) current.send(JSON.stringify({ type: 'ping' })); }, 20000);
       }
       if (message.type === 'capture-state') {
+        if (message.workspace) workspace = message.workspace;
         session.capture = message.capture;
         session.binding = message.capture?.editTarget || null;
         if (message.snapshot) { session.accept(message.snapshot); session.emit(`当前方案：${message.capture?.activeScenario?.name || '未选择'}，修改稿已保存`); }
@@ -55,12 +57,17 @@ function connect() {
           const result = await exclusive(async () => {
             switch (message.action) {
               case 'capture': session.accept(message.snapshot); return session.start(message.captureId, message.tabId);
+              case 'page-info': return session.pageInfo(message.tabId, message.expectedURL);
+              case 'follow': session.followEnabled = message.enabled; session.emit(); return { enabled: session.followEnabled };
               case 'bind': return session.bind(message.tabId);
               case 'authorize-site': return session.authorizeSite(message.tabId);
               case 'join': return session.join(message.snapshot, message.captureId, message.tabId);
               case 'apply': return session.apply(message.snapshot, message.binding, message.tabId);
+              case 'preview': return session.preview(message.snapshot, message.tabId, message.expectedURL);
               case 'restore': return session.restore(message.tabId);
               case 'prepare-scenario': return session.prepareScenario(message.tabId);
+              case 'clear-preview': return session.clearPreview();
+              case 'remove-page': return session.removePage(message.key);
               case 'end': return session.end();
               default: throw new Error('未知操作');
             }
@@ -97,13 +104,24 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   (async () => {
     await ready;
     if (message.action === 'status') {
-      const tabs = session.project ? (await chrome.tabs.query({ url: session.project.sites.map((site) => `${site.origin}/*`) })).filter((tab) => matchesProject(session.project, tab.url)) : [];
-      const missingOrigins = [];
-      for (const site of session.project?.sites || []) {
-        if (!await chrome.permissions.contains({ origins: [`${site.origin}/*`] })) missingOrigins.push(site.origin);
-      }
-      return { ...session.status(), connected, port: settings.port, paired: Boolean(settings.token),
-        missingOrigins, tabs: tabs.map(({ id, title, url, active }) => ({ id, title, url, active })) };
+      const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      const currentTab = tabs.find(tab => /^https?:/.test(tab.url || '')) || null;
+      return { ...session.status(), connected, port: settings.port, paired: Boolean(settings.token), workspace,
+        currentTab: currentTab ? { id: currentTab.id, url: currentTab.url, title: currentTab.title } : null };
+    }
+    if (message.action === 'projects') {
+      if (!connected) return null;
+      const response = await fetch(`http://127.0.0.1:${settings.port}/projects`, { headers: { Authorization: `Bearer ${settings.token}` }, signal: AbortSignal.timeout(10000) });
+      const result = await response.json(); if (!response.ok) throw new Error(result.error); workspace = result; return result;
+    }
+    if (message.action === 'open-page') {
+      const page = workspace?.pages.find(page => page.key === message.key);
+      if (!page || !/^https?:/.test(page.url)) throw new Error('页面记录不存在');
+      const tabs = await chrome.tabs.query({});
+      const existing = tabs.find(tab => tab.url === page.url);
+      if (existing) { await chrome.tabs.update(existing.id, { active: true }); await chrome.windows.update(existing.windowId, { focused: true }); }
+      else await chrome.tabs.create({ url: page.url });
+      return { opened: true };
     }
     if (message.action === 'connect') {
       if (session.active) throw new Error('请先结束当前项目会话');
@@ -112,12 +130,13 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       settings = { port, token }; await chrome.storage.local.set({ settings }); connected = false; connect();
       return { connecting: true };
     }
-    if (['capture', 'apply', 'restore', 'end', 'target', 'join', 'scenario-new', 'scenario-use'].includes(message.action)) {
+    if (['capture', 'apply', 'preview', 'restore', 'end', 'target', 'join', 'scenario-new', 'scenario-use', 'scenario-delete', 'project-new', 'project-use', 'project-delete', 'page-attach', 'page-remove', 'follow'].includes(message.action)) {
       if (!connected) throw new Error('请先连接本地服务');
       const response = await fetch(`http://127.0.0.1:${settings.port}/command`, {
         method: 'POST', headers: { Authorization: `Bearer ${settings.token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: message.action, tabId: message.tabId ? Number(message.tabId) : undefined,
-          name: message.name, scenarioId: message.scenarioId, expectedScenarioId: message.expectedScenarioId }), signal: AbortSignal.timeout(75000),
+        body: JSON.stringify({ action: message.action, tabId: message.tabId !== undefined ? Number(message.tabId) : undefined,
+          name: message.name, scenarioId: message.scenarioId, expectedScenarioId: message.expectedScenarioId, expectedProjectId: message.expectedProjectId,
+          projectId: message.projectId, url: message.url, enabled: message.enabled, key: message.key }), signal: AbortSignal.timeout(75000),
       });
       const result = await response.json(); if (!response.ok) throw new Error(result.error); return result;
     }
