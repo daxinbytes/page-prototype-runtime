@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>页面原型 · 倾斜 P</title>
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="#080808"/>
+  <path d="M18 13 L36 13 C46 13 51 18 51 25 C51 34 44 39 34 39 L29 39 L29 51 L18 51 Z M29 22 L35 22 C38.5 22 40.5 23.5 40.5 26.5 C40.5 29.8 38 31 34.5 31 L29 31 Z" transform="matrix(1 0 -.23 1 5.5 0)" fill="#FFFFFF" fill-rule="evenodd"/>
+</svg>
